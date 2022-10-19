@@ -219,9 +219,11 @@ public:
     }
 
     void cast(CastExpr * castexpr) {
-        Expr * expr = castexpr->getSubExpr();
-        int val = getValue(expr);
-        mStack.back().bindStmt(castexpr, val);
+        if (castexpr->getType()->isIntegerType()) {
+            Expr * expr = castexpr->getSubExpr();
+            int val = getValue(expr);
+            mStack.back().bindStmt(castexpr, val);
+        } 
     }
 
     void save(CallExpr *callexpr) {
@@ -328,7 +330,6 @@ public:
 
     virtual void VisitArraySubscriptExpr(ArraySubscriptExpr * expr) {
         VisitStmt(expr);        
-        
     }
 
     virtual void VisitUnaryOperator(UnaryOperator * uop) {
