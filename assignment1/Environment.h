@@ -7,7 +7,6 @@
 #include "clang/Frontend/FrontendAction.h"
 #include "clang/Tooling/Tooling.h"
 #include "clang/AST/EvaluatedExprVisitor.h"
-#include "clang/Sema/Sema.h"
 
 using namespace clang;
 
@@ -54,19 +53,17 @@ public:
     } 
 };
 
-/// Heap maps address to a value
-/*
-   class Heap {
-   public:
-   int Malloc(int size) ;
-   void Free (int addr) ;
-   void Update(int addr, int val) ;
-   int get(int addr);
-   };
-*/
+class HeapFrame {
+public:
+    int val;
+    int size;
+    bool isValid;
+    HeapFrame(int _val=0) : val(_val), isValid(true), size(-1) {}
+};
 
 class Environment {
     std::vector<StackFrame> mStack;
+    std::vector<HeapFrame> mHeap;
 
     /// Declartions to the built-in functions
     FunctionDecl * mFree;				
@@ -126,6 +123,10 @@ public:
         mStack.back().bindStmt(expr, getValue(expr->getSubExpr()));
     }
 
+    void typeTraitExpr(UnaryExprOrTypeTraitExpr * expr) {
+        mStack.back().bindStmt(expr, 1);
+    }
+
     void unop(UnaryOperator *uop) {
         auto opcode = uop->getOpcode();
         if (opcode == UO_Minus) {
@@ -143,7 +144,6 @@ public:
         return ref->getFoundDecl();
     }
 
-    /// !TODO Support comparison operation
     void binop(BinaryOperator *bop) {
         Expr * left = bop->getLHS();
         Expr * right = bop->getRHS();
@@ -219,11 +219,9 @@ public:
     }
 
     void cast(CastExpr * castexpr) {
-        if (castexpr->getType()->isIntegerType()) {
-            Expr * expr = castexpr->getSubExpr();
-            int val = getValue(expr);
-            mStack.back().bindStmt(castexpr, val);
-        }
+        Expr * expr = castexpr->getSubExpr();
+        int val = getValue(expr);
+        mStack.back().bindStmt(castexpr, val);
     }
 
     void save(CallExpr *callexpr) {
@@ -254,26 +252,39 @@ public:
 
     /// !TODO Support Function Call
     Stmt* getFuncBody(CallExpr *callexpr) {
-        int val = 0;
         FunctionDecl * callee = callexpr->getDirectCallee();
         if (callee == mInput) {
+            int val;
             llvm::errs() << "Please Input an Integer Value : ";
             scanf("%d", &val);
             mStack.back().bindStmt(callexpr, val);
             return nullptr;
         } 
         else if (callee == mOutput) {
+            int val;
             Expr * decl = callexpr->getArg(0);
             val = getValue(decl);
             llvm::errs() << val;
             return nullptr;
         }
         else if (callee == mMalloc) {
-            //TODO
+            Expr * decl = callexpr->getArg(0);
+            size_t size = getValue(decl); 
+            int addr = mHeap.size();
+            mStack.back().bindStmt(callexpr, addr);
+            mHeap.resize(mHeap.size() + size);
+            mHeap[addr] = size;
             return nullptr;
         }
         else if (callee == mFree) {
-            //TODO
+            Expr * decl = callexpr->getArg(0);
+            int addr = getValue(decl);
+            int size = mHeap[addr].size;
+            assert(size != -1);
+            for (int i = addr; i < addr + size; ++i) {
+                mHeap[i].isValid = false;
+            }
+            mHeap[addr].size = -1; 
             return nullptr;
         }
         else {
@@ -303,6 +314,11 @@ public:
                 }
             }
         }
+    }
+
+    virtual void VisitUnaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr * expr) {
+        VisitStmt(expr);
+        mEnv->typeTraitExpr(expr);
     }
     
     virtual void VisitParenExpr(ParenExpr * expr) {
