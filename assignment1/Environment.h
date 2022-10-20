@@ -65,7 +65,7 @@ class Environment {
     std::vector<StackFrame> mStack;
     std::vector<HeapFrame> mHeap;
 
-    /// Declartions to the built-in functions
+    /// Declartions to the built-in function!
     FunctionDecl * mFree;				
     FunctionDecl * mMalloc;
     FunctionDecl * mInput;
@@ -74,7 +74,7 @@ class Environment {
 
 public:
     /// Get the declartions to the built-in functions
-    Environment() : mStack(), mFree(NULL), mMalloc(NULL), mInput(NULL), mOutput(NULL), mEntry(NULL) {}
+    Environment() : mStack(), mHeap(), mFree(NULL), mMalloc(NULL), mInput(NULL), mOutput(NULL), mEntry(NULL) {}
 
     /// Initialize the Environment
     void init(TranslationUnitDecl * unit) {
@@ -114,6 +114,12 @@ public:
                 getValue(expr_array->getIdx())
             );
         }
+        else if (auto pointer_type = dyn_cast<UnaryOperator>(expr)) {
+            if (pointer_type->getOpcode() != UO_Deref) {
+                return mStack.back().getStmtVal(expr);
+            }
+            return mHeap[mStack.back().getStmtVal(expr)].val;
+        }
         else {
             return mStack.back().getStmtVal(expr);
         }
@@ -131,6 +137,11 @@ public:
         auto opcode = uop->getOpcode();
         if (opcode == UO_Minus) {
             mStack.back().bindStmt(uop, -getValue(uop->getSubExpr()));
+        }
+        else if (opcode == UO_Deref) {
+            int addr = getValue(uop->getSubExpr());
+            assert(mHeap[addr].isValid);
+            mStack.back().bindStmt(uop, addr);
         }
         else {
             llvm::errs() << "[ERROR] Unknown unary op!\n";
@@ -157,6 +168,15 @@ public:
                     getValue(array->getIdx()),
                     val
                 );
+            }
+            else if (auto pointer_type = dyn_cast<UnaryOperator>(left)) {
+                if (pointer_type->getOpcode() != UO_Deref) {
+                    mStack.back().bindStmt(left, val);
+                }
+                else {
+                    auto addr = mStack.back().getStmtVal(left); 
+                    mHeap[addr].val = val;
+                }
             }
             else {
                 mStack.back().bindStmt(left, val);
@@ -211,19 +231,19 @@ public:
     }
 
     void declref(DeclRefExpr * declref) {
-        if (declref->getType()->isIntegerType()) {
-            Decl* decl = declref->getFoundDecl();
-            int val = mStack.back().getDeclVal(decl);
-            mStack.back().bindStmt(declref, val);
+        if (declref->getType()->isFunctionType()) {
+            mStack.back().bindStmt(declref, -1);
+            return;
         }
+        Decl* decl = declref->getFoundDecl();
+        int val = mStack.back().getDeclVal(decl);
+        mStack.back().bindStmt(declref, val);
     }
 
     void cast(CastExpr * castexpr) {
-        if (castexpr->getType()->isIntegerType()) {
-            Expr * expr = castexpr->getSubExpr();
-            int val = getValue(expr);
-            mStack.back().bindStmt(castexpr, val);
-        } 
+        Expr * expr = castexpr->getSubExpr();
+        int val = getValue(expr);
+        mStack.back().bindStmt(castexpr, val);
     }
 
     void save(CallExpr *callexpr) {
@@ -242,7 +262,7 @@ public:
 
     void load(CallExpr *callexpr) {
         FunctionDecl *callee = callexpr->getDirectCallee();
-        if (callee->isNoReturn()) return;
+        if (callee->getReturnType()->isVoidType()) return;
         int retval = mStack.back().getRetValue();
         mStack.pop_back();
         mStack.back().bindStmt(callexpr, retval);
@@ -275,7 +295,7 @@ public:
             int addr = mHeap.size();
             mStack.back().bindStmt(callexpr, addr);
             mHeap.resize(mHeap.size() + size);
-            mHeap[addr] = size;
+            mHeap[addr].size = size;
             return nullptr;
         }
         else if (callee == mFree) {
