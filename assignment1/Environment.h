@@ -130,7 +130,12 @@ public:
     }
 
     void typeTraitExpr(UnaryExprOrTypeTraitExpr * expr) {
-        mStack.back().bindStmt(expr, 1);
+        if (auto array_type = dyn_cast<ConstantArrayType>(expr->getTypeOfArgument())) {
+            mStack.back().bindStmt(expr, array_type->getSize().getSExtValue());
+        }
+        else {
+            mStack.back().bindStmt(expr, 1);
+        }
     }
 
     void unop(UnaryOperator *uop) {
@@ -201,8 +206,14 @@ public:
         else if (opcode == BO_GT) {
             mStack.back().bindStmt(bop, getValue(left) > getValue(right));
         }
+        else if (opcode == BO_GE) {
+            mStack.back().bindStmt(bop, getValue(left) >= getValue(right));
+        }
         else if (opcode == BO_LT) {
             mStack.back().bindStmt(bop, getValue(left) < getValue(right));
+        }
+        else if (opcode == BO_LE) {
+            mStack.back().bindStmt(bop, getValue(left) <= getValue(right));
         }
         else if (opcode == BO_EQ) {
             mStack.back().bindStmt(bop, getValue(left) == getValue(right));
@@ -248,7 +259,7 @@ public:
 
     void save(CallExpr *callexpr) {
         StackFrame currentFrame = mStack.front();
-        FunctionDecl *callee = callexpr->getDirectCallee();
+        FunctionDecl *callee = callexpr->getDirectCallee()->getDefinition();
         auto formalArgs = callee->param_begin();
         auto actualArgs = callexpr->arg_begin();
         while (formalArgs != callee->param_end() && actualArgs != callexpr->arg_end()) {
@@ -262,7 +273,10 @@ public:
 
     void load(CallExpr *callexpr) {
         FunctionDecl *callee = callexpr->getDirectCallee();
-        if (callee->getReturnType()->isVoidType()) return;
+        if (callee->getReturnType()->isVoidType()) {
+            mStack.pop_back();
+            return;
+        }
         int retval = mStack.back().getRetValue();
         mStack.pop_back();
         mStack.back().bindStmt(callexpr, retval);
@@ -321,19 +335,20 @@ public:
 };
 
 class InterpreterVisitor : public EvaluatedExprVisitor<InterpreterVisitor> {
+    bool isReturned;
 public:
     explicit InterpreterVisitor(const ASTContext &context, Environment * env) 
-        : EvaluatedExprVisitor(context), mEnv(env) {}
+        : EvaluatedExprVisitor(context), mEnv(env), isReturned(false) {}
 
     virtual ~InterpreterVisitor() {}
 
     virtual void VisitStmt(Stmt * stmt) {
         for (auto substmt : stmt->children()) {
+            if (isReturned) {
+                break;
+            }
             if (substmt) {
                 Visit(substmt);
-                if (dyn_cast<ReturnStmt>(substmt)) {
-                    break;
-                }
             }
         }
     }
@@ -378,6 +393,7 @@ public:
         if (!body) return;
         mEnv->save(call);
         VisitStmt(body);
+        isReturned = false;
         mEnv->load(call);
     }
 
@@ -389,6 +405,7 @@ public:
     virtual void VisitReturnStmt(ReturnStmt* ret) {
         VisitStmt(ret);
         mEnv->retStmt(ret);
+        isReturned = true;
     }
 
     virtual void VisitIfStmt(IfStmt* ifstmt) {
