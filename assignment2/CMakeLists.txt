@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.1.0)
 project(assign2)
+
+add_compile_options(-fno-rtti)
+
 find_package(LLVM REQUIRED CONFIG HINTS ${LLVM_DIR} ${LLVM_DIR}/lib/cmake/llvm
 	                NO_DEFAULT_PATH)
 
@@ -22,3 +25,5 @@ add_executable(llvmassignment
 target_link_libraries(llvmassignment
 	${LLVM_LINK_COMPONENTS}
 	)
+
+set(CMAKE_BUILD_TYPE Debug)
