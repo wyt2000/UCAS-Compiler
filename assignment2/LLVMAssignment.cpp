@@ -73,6 +73,31 @@ struct FuncPtrPass : public ModulePass {
         else if (auto f = dyn_cast<Function>(use)) {
             funcSet.insert(f->getName().str());
         }
+        else if (auto call = dyn_cast<CallInst>(use)) {
+            if (auto func = call->getCalledFunction()) {
+                for (auto block_it = func->begin(); block_it != func->end(); ++block_it) {
+                    for (auto inst_it = block_it->begin(); inst_it != block_it->end(); ++inst_it) {
+                        auto& inst = *inst_it;
+                        if (auto ret = dyn_cast<ReturnInst>(inst_it)) {
+                            for (auto& subUse : ret->getReturnValue()->uses()) {
+                                auto subFuncSet = getFunctions(subUse); 
+                                for (auto& func : subFuncSet) {
+                                    funcSet.insert(func);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            else {
+                for (auto& subUse : call->uses()) {
+                    auto subFuncSet = getFunctions(subUse); 
+                    for (auto& func : subFuncSet) {
+                        funcSet.insert(func);
+                    }
+                }
+            }
+        }
         if (!funcSet.size() && argTable.count(use)) {
             for (auto subUse : argTable[use]) {
                 auto subFuncSet = getFunctions(*subUse);
@@ -107,8 +132,6 @@ struct FuncPtrPass : public ModulePass {
         }
     }
 
-    
-
     bool runOnModule(Module &M) override {
         getArgTable(M);
         for (auto func_it = M.begin(); func_it != M.end(); ++func_it) {
@@ -128,6 +151,7 @@ struct FuncPtrPass : public ModulePass {
                         else {
                             Use& use = call->getCalledOperandUse();
                             auto funcSet = getFunctions(use);
+                            assert(funcSet.size() != 0);
                             errs() << call->getDebugLoc().getLine() << " : ";
                             auto it = funcSet.begin();
                             errs() << *it++;
