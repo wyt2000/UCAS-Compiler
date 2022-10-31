@@ -51,6 +51,7 @@ struct EnableFunctionOptPass: public FunctionPass {
 
 char EnableFunctionOptPass::ID=0;
 
+// Merge s2 to s1.
 template<typename T>
 void mergeSet(std::set<T>& s1, const std::set<T> s2) {
     s1.insert(s2.begin(), s2.end());
@@ -61,6 +62,42 @@ struct FuncPtrPass : public ModulePass {
     FuncPtrPass() : ModulePass(ID) {}
     std::map<Value*, std::vector<Use*>> argTable;
 
+    // Get function call recursively from the variable used by it.
+    std::set<Function*> getFunctions(Use& use) {
+        std::set<Function*> funcSet;
+        // For trivial function, add it to set. 
+        if (auto f = dyn_cast<Function>(use)) {
+            funcSet.insert(f);
+        }
+        // For phi inst, union all functions of its possible values.
+        else if (auto phi = dyn_cast<PHINode>(use)) {
+            for (auto& subUse : phi->incoming_values()) {
+                mergeSet<Function*>(funcSet, getFunctions(subUse));
+            }
+        }
+        // For call inst, get functions from its return values. 
+        else if (auto call = dyn_cast<CallInst>(use)) {
+            // Case 1: The call inst is a trivial function.
+            if (auto func = call->getCalledFunction()) {
+                mergeSet<Function*>(funcSet, getFunctionsFromRetVal(func));
+            }
+            // Case 2: The call inst is a function pointer.
+            else {
+                for (auto& func : getFunctions(call->getCalledOperandUse())) {
+                    mergeSet<Function*>(funcSet, getFunctionsFromRetVal(func));
+                }
+            }
+        }
+        // For formal args, union all the actual args of the function.
+        else if (argTable.count(use)) {
+            for (auto subUse : argTable[use]) {
+                mergeSet<Function*>(funcSet, getFunctions(*subUse));
+            }
+        }
+        return funcSet;
+    }
+
+    // Get all functions used from return values of `func`.
     std::set<Function*> getFunctionsFromRetVal(Function* func) {
         std::set<Function*> funcSet;
         for (auto block = func->begin(); block != func->end(); ++block) {
@@ -75,34 +112,7 @@ struct FuncPtrPass : public ModulePass {
         return funcSet;
     }
 
-    std::set<Function*> getFunctions(Use& use) {
-        std::set<Function*> funcSet;
-        if (auto phi = dyn_cast<PHINode>(use)) {
-            for (auto& subUse : phi->incoming_values()) {
-                mergeSet<Function*>(funcSet, getFunctions(subUse));
-            }
-        }
-        else if (auto f = dyn_cast<Function>(use)) {
-            funcSet.insert(f);
-        }
-        else if (auto call = dyn_cast<CallInst>(use)) {
-            if (auto func = call->getCalledFunction()) {
-                mergeSet<Function*>(funcSet, getFunctionsFromRetVal(func));
-            }
-            else {
-                for (auto& func : getFunctions(call->getCalledOperandUse())) {
-                    mergeSet<Function*>(funcSet, getFunctionsFromRetVal(func));
-                }
-            }
-        }
-        if (!funcSet.size() && argTable.count(use)) {
-            for (auto subUse : argTable[use]) {
-                mergeSet<Function*>(funcSet, getFunctions(*subUse));
-            }
-        }
-        return funcSet;
-    }
-
+    // Get all calls of function or function pointer `user`. 
     std::set<CallInst*> getFuncCallUser(User* user) {
         std::set<CallInst*> callSet;
         if (auto call = dyn_cast<CallInst>(user)) {
@@ -116,6 +126,7 @@ struct FuncPtrPass : public ModulePass {
         return callSet;
     }
 
+    // Get map from formalArgs to actualArgs. 
     void getArgTable(Module& M) {
         for (auto func = M.begin(); func != M.end(); ++func) {
             for (auto user : func->users()) {
@@ -139,12 +150,14 @@ struct FuncPtrPass : public ModulePass {
         }
     }
 
+    // Travel all functions to output their calls.
     bool runOnModule(Module &M) override {
         getArgTable(M);
         for (auto func = M.begin(); func != M.end(); ++func) {
             for (auto block = func->begin(); block != func->end(); ++block) {
                 for (auto inst = block->begin(); inst != block->end(); ++inst) {
                     if (auto call = dyn_cast<CallInst>(inst)) {
+                        // For trivial functions. 
                         if (call->getCalledFunction()) {
                             auto name = call->getCalledFunction()->getName();
                             if (name != "llvm.dbg.value") {
@@ -152,6 +165,7 @@ struct FuncPtrPass : public ModulePass {
                                 errs() << call->getCalledFunction()->getName() << "\n";
                             }
                         }
+                        // For function pointers. 
                         else {
                             Use& use = call->getCalledOperandUse();
                             auto funcSet = getFunctions(use);
