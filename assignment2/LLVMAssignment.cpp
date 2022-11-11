@@ -70,6 +70,7 @@ struct FuncPtrPass : public ModulePass {
     }
     std::map<Value*, std::set<Use*>> argTable;
     FuncCallTableType funcCallTable;
+    std::stack<std::pair<CallInst*, Function*>> callStack;
 
     // Get function call recursively from the variable used by it.
     std::set<Function*> getFunctions(Use& use) {
@@ -88,19 +89,43 @@ struct FuncPtrPass : public ModulePass {
         else if (auto call = dyn_cast<CallInst>(use)) {
             // Case 1: The call inst is a trivial function.
             if (auto func = call->getCalledFunction()) {
+                callStack.push({call, func});
                 mergeSet<Function*>(funcSet, getFunctionsFromRetVal(call, func));
+                callStack.pop();
             }
             // Case 2: The call inst is a function pointer.
             else {
                 for (auto& func : getFunctions(call->getCalledOperandUse())) {
+                    callStack.push({call, func});
                     mergeSet<Function*>(funcSet, getFunctionsFromRetVal(call, func));
+                    callStack.pop();
                 }
             }
         }
-        // For formal args, union all the actual args of the function.
+        // For formal args.
         else if (argTable.count(use)) {
-            for (auto subUse : argTable[use]) {
-                mergeSet<Function*>(funcSet, getFunctions(*subUse));
+            // Case 1: Outside of calling, just look up from arg table to find all calling points.
+            if (callStack.empty()) {
+                for (auto subUse : argTable[use]) {
+                    mergeSet<Function*>(funcSet, getFunctions(*subUse));
+                }
+            } 
+            // Case 2: Called by other function, compare with the formal args.
+            else {
+                auto call = callStack.top().first;
+                auto func = callStack.top().second;
+                auto formalArg = func->arg_begin();
+                auto actualArg = call->arg_begin();
+                while (formalArg != func->arg_end() && actualArg != call->arg_end()) {
+                    if (use == formalArg) {
+                        callStack.pop();
+                        mergeSet<Function*>(funcSet, getFunctions(*actualArg));
+                        callStack.push({call, func});
+                        break;
+                    }
+                    ++formalArg;
+                    ++actualArg;
+                }
             }
         }
         return funcSet;
