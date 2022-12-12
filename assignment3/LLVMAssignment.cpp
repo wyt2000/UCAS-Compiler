@@ -12,6 +12,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <llvm/IR/DerivedTypes.h>
+#include <llvm/IR/Instructions.h>
+#include <llvm/IR/IntrinsicInst.h>
 #include <llvm/Support/CommandLine.h>
 #include <llvm/IRReader/IRReader.h>
 #include <llvm/IR/LLVMContext.h>
@@ -69,6 +72,7 @@ struct FuncPtrPass : public ModulePass {
     std::map<Value*, std::set<Use*>> argTable;
     FuncCallTableType funcCallTable;
     std::stack<std::pair<CallInst*, Function*>> callStack;
+    std::map<std::pair<Value*, unsigned>, std::set<Use*>> GEPTable;
 
     // Get function call recursively from the variable used by it.
     std::set<Function*> getFunctions(Use& use) {
@@ -126,6 +130,23 @@ struct FuncPtrPass : public ModulePass {
                 }
             }
         }
+        // For struct and array.
+        else if (auto load = dyn_cast<LoadInst>(use)) {
+            for (int i = 0; i < load->getNumOperands(); ++i) {
+                mergeSet<Function*>(funcSet, getFunctions(load->getOperandUse(i)));
+            }
+        }
+        // For struct and array.
+        else if (auto getElemPtr = dyn_cast<GetElementPtrInst>(use)) {
+            std::pair<Value*, unsigned> p = {getElemPtr->getPointerOperand(), getElemPtr->getPointerOperandIndex()};
+            assert(GEPTable.count(p));
+            for (auto use : GEPTable[p]) {
+                mergeSet<Function*>(funcSet, getFunctions(*use));
+            }
+        }
+        //else {
+        //    use->dump();
+        //}
         return funcSet;
     }
 
@@ -159,18 +180,61 @@ struct FuncPtrPass : public ModulePass {
         }
     }
 
+    // Filter func calls which needn't to be printed.
+    bool needToOutput(CallInst* call) {
+        auto func = call->getCalledFunction();
+        auto name = func->getName();
+        if (name == "llvm.dbg.value") {
+            return false;
+        }
+        if (name == "llvm.dbg.declare") {
+            return false;
+        }
+        if (auto memset = dyn_cast<MemSetInst>(call)) {
+            return false;
+        }
+        return true;
+    }
+
+    // std::map<std::pair<Value*, unsigned>, std::set<Use*>> GEPTable;
+    void getGEPTable(Module &M) {
+        for (auto func = M.begin(); func != M.end(); ++func) {
+            for (auto block = func->begin(); block != func->end(); ++block) {
+                for (auto inst = block->begin(); inst != block->end(); ++inst) {
+                    if (auto getElemPtr = dyn_cast<GetElementPtrInst>(inst)) {
+                        auto nextInst = getElemPtr->getNextNode();
+                        if (auto storeInst = dyn_cast<StoreInst>(nextInst)) {
+                            std::pair<Value*, unsigned> p = {getElemPtr->getPointerOperand(), getElemPtr->getPointerOperandIndex()};
+                            if (!GEPTable.count(p)) {
+                                GEPTable[p] = std::set<Use*>();
+                            }
+                            GEPTable[p].insert(&storeInst->getOperandUse(0));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Travel all functions to output their calls.
     bool runOnModule(Module &M) override {
+        getGEPTable(M);
         // Iter all calls until no change.
         while (true) {
             auto oldFuncCallTable = funcCallTable;
             for (auto func = M.begin(); func != M.end(); ++func) {
                 for (auto block = func->begin(); block != func->end(); ++block) {
                     for (auto inst = block->begin(); inst != block->end(); ++inst) {
+                        if (auto getElemPtr = dyn_cast<GetElementPtrInst>(inst)) {
+                            auto nextInst = getElemPtr->getNextNode();
+                            if (auto storeInst = dyn_cast<StoreInst>(nextInst)) {
+                                
+                            } 
+                        }
                         if (auto call = dyn_cast<CallInst>(inst)) {
                             // For trivial functions. 
                             if (auto calledFunc = call->getCalledFunction()) {
-                                if (call->getCalledFunction()->getName() != "llvm.dbg.value") {
+                                if (needToOutput(call)) {
                                     if (!funcCallTable.count(call)) {
                                         funcCallTable[call] = {};
                                     }
