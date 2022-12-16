@@ -61,8 +61,8 @@ void mergeSet(std::set<T>& s1, const std::set<T> s2) {
 struct FuncPtrSet {
     std::map<BasicBlock*, std::map<Instruction*, std::set<Function*>>> in, out;
     bool operator == (const FuncPtrSet& s) const {
+        auto o = s.out;
         for (auto item : out) {
-            auto o = s.out;
             if (!o.count(item.first)) {
                 return false;
             }
@@ -94,7 +94,13 @@ struct FuncPtrPass : public ModulePass {
     void printFuncPtrSet(FuncPtrSet s) {
         for (auto item : s.out) {
             item.first->dump();
-            outs() << item.second.size() << "\n";
+            for (auto p : item.second) {
+                outs() << p.first->getDebugLoc().getLine() << ": ";
+                for (auto f : p.second) {
+                    outs() << f->getName() << " ";
+                }
+                outs() << "\n";
+            }
         }
     }
 
@@ -129,12 +135,7 @@ struct FuncPtrPass : public ModulePass {
                         if (auto store = dyn_cast<StoreInst>(inst)) {
                             if (auto bitcast = dyn_cast<BitCastInst>(store->getOperand(1))) {
                                 if (auto funcPtr = dyn_cast<Function>(store->getOperand(0))) {
-                                    if (myPtrSet.count(bitcast)) {
-                                        myPtrSet[bitcast].insert(funcPtr);
-                                    }
-                                    else {
-                                        myPtrSet[bitcast] = {funcPtr};
-                                    }
+                                    myPtrSet[bitcast] = {funcPtr};
                                 }
                             }
                         }
@@ -147,6 +148,30 @@ struct FuncPtrPass : public ModulePass {
             }
             funcPtrTable[&*func] = funcPtrSet;
         }
+    }
+
+    std::set<Function*> getFunctionsFromPtr(Instruction* inst) {
+        auto myBitcast = dyn_cast<BitCastInst>(inst->getOperand(0));
+        std::set<Function*> funcSet;
+        auto bb = inst->getParent();
+        auto func = bb->getParent();
+        auto in = funcPtrTable[func].in[bb];
+        if (in.count(myBitcast)) {
+            funcSet = in[myBitcast];
+        }
+        for (auto it = bb->begin(); it != bb->end(); ++it) {
+            if (&*it == inst) break;
+            if (auto store = dyn_cast<StoreInst>(it)) {
+                if (auto bitcast = dyn_cast<BitCastInst>(store->getOperand(1))) {
+                    if (bitcast == myBitcast) {
+                        if (auto funcPtr = dyn_cast<Function>(store->getOperand(0))) {
+                            funcSet = {funcPtr};
+                        }
+                    }
+                }
+            }
+        } 
+        return funcSet;
     }
             
 
@@ -209,6 +234,7 @@ struct FuncPtrPass : public ModulePass {
         // For load instr. 
         else if (auto load = dyn_cast<LoadInst>(use)) {
             if (auto bitcast = dyn_cast<BitCastInst>(load->getOperand(0))) {
+                mergeSet<Function*>(funcSet, getFunctionsFromPtr(load));
             }
             else {
                 mergeSet<Function*>(funcSet, getFunctions(load->getOperandUse(0)));
