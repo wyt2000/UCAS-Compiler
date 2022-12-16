@@ -58,6 +58,22 @@ void mergeSet(std::set<T>& s1, const std::set<T> s2) {
     s1.insert(s2.begin(), s2.end());
 }
 
+struct FuncPtrSet {
+    std::map<BasicBlock*, std::map<Instruction*, std::set<Function*>>> in, out;
+    bool operator == (const FuncPtrSet& s) const {
+        for (auto item : out) {
+            auto o = s.out;
+            if (!o.count(item.first)) {
+                return false;
+            }
+            if (o[item.first] != item.second) {
+                return false;
+            }
+        }
+        return true;
+    }
+};
+
 struct FuncPtrPass : public ModulePass {
     using FuncCallTableType = std::map<CallInst*, std::set<Function*>, bool(*)(CallInst*, CallInst*)>;
     static char ID; // Pass identification, replacement for typeid
@@ -73,6 +89,66 @@ struct FuncPtrPass : public ModulePass {
     FuncCallTableType funcCallTable;
     std::stack<std::pair<CallInst*, Function*>> callStack;
     std::map<std::pair<Value*, unsigned>, std::set<Use*>> GEPTable;
+    std::map<Function*, FuncPtrSet> funcPtrTable;
+
+    void printFuncPtrSet(FuncPtrSet s) {
+        for (auto item : s.out) {
+            item.first->dump();
+            outs() << item.second.size() << "\n";
+        }
+    }
+
+    void getFuncPtrTable(Module& M) {
+        for (auto func = M.begin(); func != M.end(); ++func) {
+            FuncPtrSet funcPtrSet;
+            for (auto block = func->begin(); block != func->end(); ++block) {
+                auto bb = &*block;
+                funcPtrSet.in[bb] = std::map<Instruction*, std::set<Function*>>();
+                funcPtrSet.out[bb] = std::map<Instruction*, std::set<Function*>>();
+            }
+            while (true) {
+                auto oldFuncPtrSet = funcPtrSet;
+                for (auto block = func->begin(); block != func->end(); ++block) {
+                    std::map<Instruction*, std::set<Function*>> myPtrSet;
+                    auto bb = &*block;
+                    for (auto it = pred_begin(bb); it != pred_end(bb); ++it) {
+                        auto pred = *it;
+                        for (auto item : funcPtrSet.out[pred]) {
+                            auto inst = item.first;
+                            auto funcSet = item.second;
+                            if (myPtrSet.count(inst)) {
+                                myPtrSet[inst].insert(funcSet.begin(), funcSet.end());
+                            }
+                            else {
+                                myPtrSet[inst] = funcSet;
+                            }
+                        }
+                    }
+                    funcPtrSet.in[bb] = myPtrSet;
+                    for (auto inst = block->begin(); inst != block->end(); ++inst) {
+                        if (auto store = dyn_cast<StoreInst>(inst)) {
+                            if (auto bitcast = dyn_cast<BitCastInst>(store->getOperand(1))) {
+                                if (auto funcPtr = dyn_cast<Function>(store->getOperand(0))) {
+                                    if (myPtrSet.count(bitcast)) {
+                                        myPtrSet[bitcast].insert(funcPtr);
+                                    }
+                                    else {
+                                        myPtrSet[bitcast] = {funcPtr};
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    funcPtrSet.out[bb] = myPtrSet;
+                }
+                if (oldFuncPtrSet == funcPtrSet) {
+                    break;
+                }
+            }
+            funcPtrTable[&*func] = funcPtrSet;
+        }
+    }
+            
 
     // Get function call recursively from the variable used by it.
     std::set<Function*> getFunctions(Use& use) {
@@ -130,10 +206,12 @@ struct FuncPtrPass : public ModulePass {
                 }
             }
         }
-        // For struct and array.
+        // For load instr. 
         else if (auto load = dyn_cast<LoadInst>(use)) {
-            for (int i = 0; i < load->getNumOperands(); ++i) {
-                mergeSet<Function*>(funcSet, getFunctions(load->getOperandUse(i)));
+            if (auto bitcast = dyn_cast<BitCastInst>(load->getOperand(0))) {
+            }
+            else {
+                mergeSet<Function*>(funcSet, getFunctions(load->getOperandUse(0)));
             }
         }
         // For struct and array.
@@ -196,11 +274,11 @@ struct FuncPtrPass : public ModulePass {
         return true;
     }
 
-    // std::map<std::pair<Value*, unsigned>, std::set<Use*>> GEPTable;
-    void getGEPTable(Module &M) {
+    void preProcess(Module &M) {
         for (auto func = M.begin(); func != M.end(); ++func) {
             for (auto block = func->begin(); block != func->end(); ++block) {
                 for (auto inst = block->begin(); inst != block->end(); ++inst) {
+                    // For GEP table.
                     if (auto getElemPtr = dyn_cast<GetElementPtrInst>(inst)) {
                         auto nextInst = getElemPtr->getNextNode();
                         if (auto storeInst = dyn_cast<StoreInst>(nextInst)) {
@@ -214,23 +292,18 @@ struct FuncPtrPass : public ModulePass {
                 }
             }
         }
+        getFuncPtrTable(M);
     }
 
     // Travel all functions to output their calls.
     bool runOnModule(Module &M) override {
-        getGEPTable(M);
+        preProcess(M);
         // Iter all calls until no change.
         while (true) {
             auto oldFuncCallTable = funcCallTable;
             for (auto func = M.begin(); func != M.end(); ++func) {
                 for (auto block = func->begin(); block != func->end(); ++block) {
                     for (auto inst = block->begin(); inst != block->end(); ++inst) {
-                        if (auto getElemPtr = dyn_cast<GetElementPtrInst>(inst)) {
-                            auto nextInst = getElemPtr->getNextNode();
-                            if (auto storeInst = dyn_cast<StoreInst>(nextInst)) {
-                                
-                            } 
-                        }
                         if (auto call = dyn_cast<CallInst>(inst)) {
                             // For trivial functions. 
                             if (auto calledFunc = call->getCalledFunction()) {
