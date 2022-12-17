@@ -59,7 +59,7 @@ void mergeSet(std::set<T>& s1, const std::set<T> s2) {
 }
 
 struct FuncPtrSet {
-    std::map<BasicBlock*, std::map<Instruction*, std::set<Function*>>> in, out;
+    std::map<BasicBlock*, std::map<Value*, std::set<Use*>>> in, out;
     bool operator == (const FuncPtrSet& s) const {
         auto o = s.out;
         for (auto item : out) {
@@ -95,9 +95,11 @@ struct FuncPtrPass : public ModulePass {
         for (auto item : s.out) {
             item.first->dump();
             for (auto p : item.second) {
-                outs() << p.first->getDebugLoc().getLine() << ": ";
+                if (auto inst = dyn_cast<Instruction>(p.first)) {
+                    outs() << inst->getDebugLoc().getLine() << ": ";
+                }
                 for (auto f : p.second) {
-                    outs() << f->getName() << " ";
+                    outs() << f->get()->getName() << " ";
                 }
                 outs() << "\n";
             }
@@ -109,13 +111,13 @@ struct FuncPtrPass : public ModulePass {
             FuncPtrSet funcPtrSet;
             for (auto block = func->begin(); block != func->end(); ++block) {
                 auto bb = &*block;
-                funcPtrSet.in[bb] = std::map<Instruction*, std::set<Function*>>();
-                funcPtrSet.out[bb] = std::map<Instruction*, std::set<Function*>>();
+                funcPtrSet.in[bb] = std::map<Value*, std::set<Use*>>();
+                funcPtrSet.out[bb] = std::map<Value*, std::set<Use*>>();
             }
             while (true) {
                 auto oldFuncPtrSet = funcPtrSet;
                 for (auto block = func->begin(); block != func->end(); ++block) {
-                    std::map<Instruction*, std::set<Function*>> myPtrSet;
+                    std::map<Value*, std::set<Use*>> myPtrSet;
                     auto bb = &*block;
                     for (auto it = pred_begin(bb); it != pred_end(bb); ++it) {
                         auto pred = *it;
@@ -134,9 +136,8 @@ struct FuncPtrPass : public ModulePass {
                     for (auto inst = block->begin(); inst != block->end(); ++inst) {
                         if (auto store = dyn_cast<StoreInst>(inst)) {
                             if (auto bitcast = dyn_cast<BitCastInst>(store->getOperand(1))) {
-                                if (auto funcPtr = dyn_cast<Function>(store->getOperand(0))) {
-                                    myPtrSet[bitcast] = {funcPtr};
-                                }
+                                auto target = bitcast->getOperand(0);
+                                myPtrSet[target] = {&store->getOperandUse(0)};
                             }
                         }
                     }
@@ -151,22 +152,29 @@ struct FuncPtrPass : public ModulePass {
     }
 
     std::set<Function*> getFunctionsFromPtr(Instruction* inst) {
-        auto myBitcast = dyn_cast<BitCastInst>(inst->getOperand(0));
+        Value* target = nullptr;
+        if (auto bitcast = dyn_cast<BitCastInst>(inst->getOperand(0))) {
+            target = bitcast->getOperand(0);
+        }
+        else {
+            assert(0);
+        }
         std::set<Function*> funcSet;
         auto bb = inst->getParent();
         auto func = bb->getParent();
         auto in = funcPtrTable[func].in[bb];
-        if (in.count(myBitcast)) {
-            funcSet = in[myBitcast];
+        if (in.count(target)) {
+            for (auto use : in[target]) {
+                mergeSet<Function*>(funcSet, getFunctions(*use));
+            }
         }
         for (auto it = bb->begin(); it != bb->end(); ++it) {
             if (&*it == inst) break;
             if (auto store = dyn_cast<StoreInst>(it)) {
                 if (auto bitcast = dyn_cast<BitCastInst>(store->getOperand(1))) {
-                    if (bitcast == myBitcast) {
-                        if (auto funcPtr = dyn_cast<Function>(store->getOperand(0))) {
-                            funcSet = {funcPtr};
-                        }
+                    auto value = bitcast->getOperand(0);
+                    if (value == target) {
+                        funcSet = {getFunctions(store->getOperandUse(0))};
                     }
                 }
             }
@@ -304,10 +312,8 @@ struct FuncPtrPass : public ModulePass {
         for (auto func = M.begin(); func != M.end(); ++func) {
             for (auto block = func->begin(); block != func->end(); ++block) {
                 for (auto inst = block->begin(); inst != block->end(); ++inst) {
-                    // For GEP table.
-                    if (auto getElemPtr = dyn_cast<GetElementPtrInst>(inst)) {
-                        auto nextInst = getElemPtr->getNextNode();
-                        if (auto storeInst = dyn_cast<StoreInst>(nextInst)) {
+                    if (auto storeInst = dyn_cast<StoreInst>(inst)) {
+                        if (auto getElemPtr = dyn_cast<GetElementPtrInst>(storeInst->getOperand(1))) {
                             std::pair<Value*, unsigned> p = {getElemPtr->getPointerOperand(), getElemPtr->getPointerOperandIndex()};
                             if (!GEPTable.count(p)) {
                                 GEPTable[p] = std::set<Use*>();
