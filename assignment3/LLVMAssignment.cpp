@@ -156,24 +156,26 @@ struct FuncPtrPass : public ModulePass {
         }
     }
 
-    std::set<Function*> getFunctionsFromPtr(Instruction* inst) {
-        Value* target = nullptr;
-        if (auto bitcast = dyn_cast<BitCastInst>(inst->getOperand(0))) {
-            target = bitcast->getOperand(0);
-        }
-        else if (auto getElemPtr = dyn_cast<GetElementPtrInst>(inst->getOperand(0))) {
-            target = getElemPtr->getOperand(0);
-        }
-        else {
-            assert(0);
-        }
+    std::set<Function*> getFunctionsFromPtr(Instruction* inst, Use* use) {
+        Value* target = use->get();
         std::set<Function*> funcSet;
         auto bb = inst->getParent();
         auto func = bb->getParent();
         auto in = funcPtrTable[func].in[bb];
+        if (auto load = dyn_cast<LoadInst>(target)) {
+            return getFunctions(*use);
+        }
+        //if (auto call = dyn_cast<CallInst>(target)) {
+        //    return getFunctions(*use);
+        //}
         if (in.count(target)) {
             for (auto use : in[target]) {
-                mergeSet<Function*>(funcSet, getFunctions(*use));
+                if (auto alloca = dyn_cast<AllocaInst>(use)) {
+                    mergeSet<Function*>(funcSet, getFunctionsFromPtr(inst, use));
+                }
+                else {
+                    mergeSet<Function*>(funcSet, getFunctions(*use));
+                }
             }
         }
         for (auto it = bb->begin(); it != bb->end(); ++it) {
@@ -227,6 +229,18 @@ struct FuncPtrPass : public ModulePass {
                 }
             }
         }
+        // For load instr. 
+        else if (auto load = dyn_cast<LoadInst>(use)) {
+            if (auto bitcast = dyn_cast<BitCastInst>(load->getOperand(0))) {
+                mergeSet<Function*>(funcSet, getFunctionsFromPtr(load, &bitcast->getOperandUse(0)));
+            }
+            else if (auto getElemPtr = dyn_cast<GetElementPtrInst>(load->getOperand(0))) {
+                mergeSet<Function*>(funcSet, getFunctionsFromPtr(load, &getElemPtr->getOperandUse(0)));
+            }
+            else {
+                mergeSet<Function*>(funcSet, getFunctions(load->getOperandUse(0)));
+            }
+        }
         // For formal args.
         else if (argTable.count(use)) {
             // Case 1: Outside of calling, just look up from arg table to find all calling points.
@@ -251,18 +265,6 @@ struct FuncPtrPass : public ModulePass {
                     ++formalArg;
                     ++actualArg;
                 }
-            }
-        }
-        // For load instr. 
-        else if (auto load = dyn_cast<LoadInst>(use)) {
-            if (auto bitcast = dyn_cast<BitCastInst>(load->getOperand(0))) {
-                mergeSet<Function*>(funcSet, getFunctionsFromPtr(load));
-            }
-            else if (auto getElemPtr = dyn_cast<GetElementPtrInst>(load->getOperand(0))) {
-                mergeSet<Function*>(funcSet, getFunctionsFromPtr(load));
-            }
-            else {
-                mergeSet<Function*>(funcSet, getFunctions(load->getOperandUse(0)));
             }
         }
         //else {
@@ -312,6 +314,9 @@ struct FuncPtrPass : public ModulePass {
             return false;
         }
         if (auto memset = dyn_cast<MemSetInst>(call)) {
+            return false;
+        }
+        if (auto memcpy = dyn_cast<MemCpyInst>(call)) {
             return false;
         }
         return true;
