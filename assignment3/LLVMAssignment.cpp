@@ -96,7 +96,7 @@ struct FuncPtrPass : public ModulePass {
             item.first->dump();
             for (auto p : item.second) {
                 if (auto inst = dyn_cast<Instruction>(p.first)) {
-                    outs() << inst->getDebugLoc().getLine() << ": ";
+                    inst->dump();
                 }
                 for (auto f : p.second) {
                     outs() << f->get()->getName() << " ";
@@ -139,6 +139,10 @@ struct FuncPtrPass : public ModulePass {
                                 auto target = bitcast->getOperand(0);
                                 myPtrSet[target] = {&store->getOperandUse(0)};
                             }
+                            else if (auto getElemPtr = dyn_cast<GetElementPtrInst>(store->getOperand(1))) {
+                                auto target = getElemPtr->getOperand(0);
+                                myPtrSet[target] = {&store->getOperandUse(0)};
+                            }
                         }
                     }
                     funcPtrSet.out[bb] = myPtrSet;
@@ -148,6 +152,7 @@ struct FuncPtrPass : public ModulePass {
                 }
             }
             funcPtrTable[&*func] = funcPtrSet;
+            //printFuncPtrSet(funcPtrSet);
         }
     }
 
@@ -155,6 +160,9 @@ struct FuncPtrPass : public ModulePass {
         Value* target = nullptr;
         if (auto bitcast = dyn_cast<BitCastInst>(inst->getOperand(0))) {
             target = bitcast->getOperand(0);
+        }
+        else if (auto getElemPtr = dyn_cast<GetElementPtrInst>(inst->getOperand(0))) {
+            target = getElemPtr->getOperand(0);
         }
         else {
             assert(0);
@@ -173,6 +181,12 @@ struct FuncPtrPass : public ModulePass {
             if (auto store = dyn_cast<StoreInst>(it)) {
                 if (auto bitcast = dyn_cast<BitCastInst>(store->getOperand(1))) {
                     auto value = bitcast->getOperand(0);
+                    if (value == target) {
+                        funcSet = {getFunctions(store->getOperandUse(0))};
+                    }
+                }
+                else if (auto getElemPtr = dyn_cast<GetElementPtrInst>(store->getOperand(1))) {
+                    auto value = getElemPtr->getOperand(0);
                     if (value == target) {
                         funcSet = {getFunctions(store->getOperandUse(0))};
                     }
@@ -244,16 +258,11 @@ struct FuncPtrPass : public ModulePass {
             if (auto bitcast = dyn_cast<BitCastInst>(load->getOperand(0))) {
                 mergeSet<Function*>(funcSet, getFunctionsFromPtr(load));
             }
+            else if (auto getElemPtr = dyn_cast<GetElementPtrInst>(load->getOperand(0))) {
+                mergeSet<Function*>(funcSet, getFunctionsFromPtr(load));
+            }
             else {
                 mergeSet<Function*>(funcSet, getFunctions(load->getOperandUse(0)));
-            }
-        }
-        // For struct and array.
-        else if (auto getElemPtr = dyn_cast<GetElementPtrInst>(use)) {
-            std::pair<Value*, unsigned> p = {getElemPtr->getPointerOperand(), getElemPtr->getPointerOperandIndex()};
-            assert(GEPTable.count(p));
-            for (auto use : GEPTable[p]) {
-                mergeSet<Function*>(funcSet, getFunctions(*use));
             }
         }
         //else {
@@ -308,28 +317,9 @@ struct FuncPtrPass : public ModulePass {
         return true;
     }
 
-    void preProcess(Module &M) {
-        for (auto func = M.begin(); func != M.end(); ++func) {
-            for (auto block = func->begin(); block != func->end(); ++block) {
-                for (auto inst = block->begin(); inst != block->end(); ++inst) {
-                    if (auto storeInst = dyn_cast<StoreInst>(inst)) {
-                        if (auto getElemPtr = dyn_cast<GetElementPtrInst>(storeInst->getOperand(1))) {
-                            std::pair<Value*, unsigned> p = {getElemPtr->getPointerOperand(), getElemPtr->getPointerOperandIndex()};
-                            if (!GEPTable.count(p)) {
-                                GEPTable[p] = std::set<Use*>();
-                            }
-                            GEPTable[p].insert(&storeInst->getOperandUse(0));
-                        }
-                    }
-                }
-            }
-        }
-        getFuncPtrTable(M);
-    }
-
     // Travel all functions to output their calls.
     bool runOnModule(Module &M) override {
-        preProcess(M);
+        getFuncPtrTable(M);
         // Iter all calls until no change.
         while (true) {
             auto oldFuncCallTable = funcCallTable;
