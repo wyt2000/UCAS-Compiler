@@ -15,6 +15,7 @@
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/IntrinsicInst.h>
+#include <llvm/Support/Allocator.h>
 #include <llvm/Support/CommandLine.h>
 #include <llvm/IRReader/IRReader.h>
 #include <llvm/IR/LLVMContext.h>
@@ -165,9 +166,14 @@ struct FuncPtrPass : public ModulePass {
         if (auto load = dyn_cast<LoadInst>(target)) {
             return getFunctions(*use);
         }
-        //if (auto call = dyn_cast<CallInst>(target)) {
-        //    return getFunctions(*use);
-        //}
+        if (auto call = dyn_cast<CallInst>(target)) {
+            if (!call->getCalledFunction() || call->getCalledFunction()->getName() != "malloc") {
+                return getFunctions(*use);
+            }
+        }
+        if (argTable.count(*use)) {
+            return getFunctions(*use);
+        }
         if (in.count(target)) {
             for (auto use : in[target]) {
                 if (auto alloca = dyn_cast<AllocaInst>(use)) {
@@ -258,7 +264,12 @@ struct FuncPtrPass : public ModulePass {
                 while (formalArg != func->arg_end() && actualArg != call->arg_end()) {
                     if (use == formalArg) {
                         callStack.pop();
-                        mergeSet<Function*>(funcSet, getFunctions(*actualArg));
+                        if (auto alloca = dyn_cast<AllocaInst>(actualArg)) {
+                            mergeSet<Function*>(funcSet, getFunctionsFromPtr(call, actualArg));
+                        }
+                        else {
+                            mergeSet<Function*>(funcSet, getFunctions(*actualArg));
+                        }
                         callStack.push({call, func});
                         break;
                     }
