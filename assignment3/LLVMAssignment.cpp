@@ -154,6 +154,10 @@ struct FuncPtrPass : public ModulePass {
                                     if (auto alloca = dyn_cast<AllocaInst>(actualArg)) {
                                         myPtrSet[alloca] = funcPtrTable[func].out[&func->getEntryBlock()][formalArg];
                                     }
+                                    else if (auto bitcast = dyn_cast<BitCastInst>(actualArg)) {
+                                        auto target = bitcast->getOperand(0);
+                                        myPtrSet[target] = funcPtrTable[func].out[&func->getEntryBlock()][formalArg];
+                                    }
                                     ++actualArg;
                                     ++formalArg;
                                 }
@@ -220,8 +224,17 @@ struct FuncPtrPass : public ModulePass {
                     auto actualArg = call->arg_begin();
                     auto formalArg = func->arg_begin();
                     while (actualArg != call->arg_end()) {
-                        if (*actualArg == target) {
-                            if (auto alloca = dyn_cast<AllocaInst>(actualArg)) {
+                        if (auto alloca = dyn_cast<AllocaInst>(actualArg)) {
+                            if (alloca == target) {
+                                for (auto use: funcPtrTable[func].out[&func->getEntryBlock()][formalArg]) {
+                                    callStack.push({call, func});
+                                    funcSet = getFunctions(*use);
+                                    callStack.pop();
+                                }
+                            }
+                        }
+                        else if (auto bitcast = dyn_cast<BitCastInst>(actualArg)) {
+                            if (bitcast->getOperand(0) == target) {
                                 for (auto use: funcPtrTable[func].out[&func->getEntryBlock()][formalArg]) {
                                     callStack.push({call, func});
                                     funcSet = getFunctions(*use);
