@@ -208,13 +208,23 @@ struct FuncPtrPass : public ModulePass {
                 if (auto bitcast = dyn_cast<BitCastInst>(store->getOperand(1))) {
                     auto value = bitcast->getOperand(0);
                     if (value == target) {
-                        funcSet = {getFunctions(store->getOperandUse(0))};
+                        if (auto alloca = dyn_cast<AllocaInst>(store->getOperand(0))) {
+                            funcSet = {getFunctionsFromPtr(inst, &store->getOperandUse(0))};
+                        }
+                        else {
+                            funcSet = {getFunctions(store->getOperandUse(0))};
+                        }
                     }
                 }
                 else if (auto getElemPtr = dyn_cast<GetElementPtrInst>(store->getOperand(1))) {
                     auto value = getElemPtr->getOperand(0);
                     if (value == target) {
-                        funcSet = {getFunctions(store->getOperandUse(0))};
+                        if (auto alloca = dyn_cast<AllocaInst>(store->getOperand(0))) {
+                            funcSet = {getFunctionsFromPtr(inst, &store->getOperandUse(0))};
+                        }
+                        else {
+                            funcSet = {getFunctions(store->getOperandUse(0))};
+                        }
                     }
                 }
             }
