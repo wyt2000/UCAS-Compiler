@@ -247,6 +247,10 @@ struct FuncPtrPass : public ModulePass {
                 mergeSet<Function*>(funcSet, getFunctions(load->getOperandUse(0)));
             }
         }
+        // For array(test21).
+        else if (auto getElemPtr = dyn_cast<GetElementPtrInst>(use)) {
+            mergeSet<Function*>(funcSet, getFunctionsFromPtr(getElemPtr, &getElemPtr->getOperandUse(0)));
+        }
         // For formal args.
         else if (argTable.count(use)) {
             // Case 1: Outside of calling, just look up from arg table to find all calling points.
