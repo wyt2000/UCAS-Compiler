@@ -145,6 +145,20 @@ struct FuncPtrPass : public ModulePass {
                                 myPtrSet[target] = {&store->getOperandUse(0)};
                             }
                         }
+                        else if (auto call = dyn_cast<CallInst>(inst)) {
+                            if (needToOutput(call)) {
+                                auto func = call->getCalledFunction();
+                                auto actualArg = call->arg_begin();
+                                auto formalArg = func->arg_begin();
+                                while (actualArg != call->arg_end()) {
+                                    if (auto alloca = dyn_cast<AllocaInst>(actualArg)) {
+                                        myPtrSet[alloca] = funcPtrTable[func].out[&func->getEntryBlock()][formalArg];
+                                    }
+                                    ++actualArg;
+                                    ++formalArg;
+                                }
+                            }
+                        }
                     }
                     funcPtrSet.out[bb] = myPtrSet;
                 }
@@ -197,6 +211,26 @@ struct FuncPtrPass : public ModulePass {
                     auto value = getElemPtr->getOperand(0);
                     if (value == target) {
                         funcSet = {getFunctions(store->getOperandUse(0))};
+                    }
+                }
+            }
+            else if (auto call = dyn_cast<CallInst>(it)) {
+                if (needToOutput(call)) {
+                    auto func = call->getCalledFunction();
+                    auto actualArg = call->arg_begin();
+                    auto formalArg = func->arg_begin();
+                    while (actualArg != call->arg_end()) {
+                        if (*actualArg == target) {
+                            if (auto alloca = dyn_cast<AllocaInst>(actualArg)) {
+                                for (auto use: funcPtrTable[func].out[&func->getEntryBlock()][formalArg]) {
+                                    callStack.push({call, func});
+                                    funcSet = getFunctions(*use);
+                                    callStack.pop();
+                                }
+                            }
+                        }
+                        ++actualArg;
+                        ++formalArg;
                     }
                 }
             }
@@ -321,6 +355,9 @@ struct FuncPtrPass : public ModulePass {
     // Filter func calls which needn't to be printed.
     bool needToOutput(CallInst* call) {
         auto func = call->getCalledFunction();
+        if (!func) {
+            return false;
+        }
         auto name = func->getName();
         if (name == "llvm.dbg.value") {
             return false;
