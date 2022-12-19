@@ -107,6 +107,29 @@ struct FuncPtrPass : public ModulePass {
         }
     }
 
+    Value* getRootInst(Value* inst) {
+        if (auto alloca = dyn_cast<AllocaInst>(inst)) {
+            return alloca;
+        }
+        if (auto bitcast = dyn_cast<BitCastInst>(inst)) {
+            return bitcast->getOperand(0);
+        }
+        if (auto load = dyn_cast<LoadInst>(inst)) {
+            return getRootInst(load->getOperand(0));
+        }
+        if (auto getElemPtr = dyn_cast<GetElementPtrInst>(inst)) {
+            return getRootInst(getElemPtr->getOperand(0));
+        }
+        return inst;
+    }
+
+    void setMyPtrSet(std::map<Value*, std::set<Use*>>& myPtrSet, Value* target, Use* use) {
+        for (auto item : myPtrSet[target]) {
+            setMyPtrSet(myPtrSet, *item, use);
+        }
+        myPtrSet[target] = {use};
+    }
+
     void getFuncPtrTable(Module& M) {
         for (auto func = M.begin(); func != M.end(); ++func) {
             FuncPtrSet funcPtrSet;
@@ -141,8 +164,14 @@ struct FuncPtrPass : public ModulePass {
                                 myPtrSet[target] = {&store->getOperandUse(0)};
                             }
                             else if (auto getElemPtr = dyn_cast<GetElementPtrInst>(store->getOperand(1))) {
-                                auto target = getElemPtr->getOperand(0);
-                                myPtrSet[target] = {&store->getOperandUse(0)};
+                                if (auto load = dyn_cast<LoadInst>(getElemPtr->getOperand(0))) {
+                                    auto target = getRootInst(load);
+                                    setMyPtrSet(myPtrSet, target, &store->getOperandUse(0));
+                                }
+                                else {
+                                    auto target = getRootInst(getElemPtr);
+                                    myPtrSet[target] = {&store->getOperandUse(0)};
+                                }
                             }
                         }
                         else if (auto call = dyn_cast<CallInst>(inst)) {
@@ -298,7 +327,12 @@ struct FuncPtrPass : public ModulePass {
                 mergeSet<Function*>(funcSet, getFunctionsFromPtr(load, &bitcast->getOperandUse(0)));
             }
             else if (auto getElemPtr = dyn_cast<GetElementPtrInst>(load->getOperand(0))) {
-                mergeSet<Function*>(funcSet, getFunctionsFromPtr(load, &getElemPtr->getOperandUse(0)));
+                if (auto bitcast = dyn_cast<BitCastInst>(getElemPtr->getOperand(0))) {
+                    mergeSet<Function*>(funcSet, getFunctionsFromPtr(load, &bitcast->getOperandUse(0)));
+                }
+                else {
+                    mergeSet<Function*>(funcSet, getFunctionsFromPtr(load, &getElemPtr->getOperandUse(0)));
+                }
             }
             else {
                 mergeSet<Function*>(funcSet, getFunctions(load->getOperandUse(0)));
