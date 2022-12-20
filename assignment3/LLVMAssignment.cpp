@@ -177,15 +177,46 @@ struct FuncPtrPass : public ModulePass {
                         else if (auto call = dyn_cast<CallInst>(inst)) {
                             if (needToOutput(call)) {
                                 auto func = call->getCalledFunction();
+                                std::map<Value*, Use*> myArgTable;
                                 auto actualArg = call->arg_begin();
                                 auto formalArg = func->arg_begin();
                                 while (actualArg != call->arg_end()) {
+                                    myArgTable[formalArg] = actualArg;
+                                    ++actualArg;
+                                    ++formalArg;
+                                }
+                                actualArg = call->arg_begin();
+                                formalArg = func->arg_begin();
+                                while (actualArg != call->arg_end()) {
                                     if (auto alloca = dyn_cast<AllocaInst>(actualArg)) {
-                                        myPtrSet[alloca] = funcPtrTable[func].out[&func->getEntryBlock()][formalArg];
+                                        auto ptrSet = funcPtrTable[func].out[&func->getEntryBlock()][formalArg];
+                                        if (!ptrSet.empty()) {
+                                            myPtrSet[alloca] = {};
+                                            for (auto item : ptrSet) {
+                                                auto root = getRootInst(item->get()); 
+                                                if (myArgTable.count(root)) {
+                                                    myPtrSet[alloca].insert(myArgTable[root]); 
+                                                }
+                                                else {
+                                                    myPtrSet[alloca].insert(&*root->use_begin());
+                                                }
+                                            }
+                                        }
                                     }
                                     else if (auto bitcast = dyn_cast<BitCastInst>(actualArg)) {
                                         auto target = bitcast->getOperand(0);
-                                        myPtrSet[target] = funcPtrTable[func].out[&func->getEntryBlock()][formalArg];
+                                        auto ptrSet = funcPtrTable[func].out[&func->getEntryBlock()][formalArg];
+                                        if (!ptrSet.empty()) {
+                                            for (auto item : ptrSet) {
+                                                auto root = getRootInst(item->get()); 
+                                                if (myArgTable.count(root)) {
+                                                    setMyPtrSet(myPtrSet, target, myArgTable[root]);
+                                                }
+                                                else {
+                                                    myPtrSet[target].insert(&*root->use_begin());
+                                                }
+                                            }
+                                        }
                                     }
                                     ++actualArg;
                                     ++formalArg;
@@ -200,7 +231,6 @@ struct FuncPtrPass : public ModulePass {
                 }
             }
             funcPtrTable[&*func] = funcPtrSet;
-            //printFuncPtrSet(funcPtrSet);
         }
     }
 
